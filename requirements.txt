@@ -1,0 +1,7 @@
+g4f
+rich
+tqdm
+psutil
+GPUtil
+pygetwindow
+pywinauto
