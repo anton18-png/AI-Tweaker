@@ -1,5 +1,11 @@
 # Готовы ли вы доверить GPT оптимизацию Windows?
 
+![GitHub Release](https://img.shields.io/github/v/release/anton18-png/AI-Tweaker?style=for-the-badge)
+![GitHub Release](https://img.shields.io/github/v/release/xtekky/gpt4free?style=for-the-badge&label=GPT4FREE)
+![GitHub repo size](https://img.shields.io/github/repo-size/anton18-png/AI-Tweaker?style=for-the-badge)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/anton18-png/AI-Tweaker/total?style=for-the-badge)
+![GitHub License](https://img.shields.io/github/license/anton18-png/All-Tweaker?style=for-the-badge)
+
 **GPT Windows 11 Optimizer** — это инструмент для автоматизированного подбора, тестирования и генерации твиков (оптимизаций) Windows 11 с помощью искусственного интеллекта (ChatGPT/GPT-4). Программа автоматически применяет твики, сравнивает производительность системы до и после, и сохраняет лучшие решения.
 
 ## Возможности
