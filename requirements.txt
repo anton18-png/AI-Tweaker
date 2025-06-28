@@ -5,3 +5,4 @@ psutil
 GPUtil
 pygetwindow
 pywinauto
+wmi

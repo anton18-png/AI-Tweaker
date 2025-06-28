@@ -26,25 +26,132 @@ logger = logging.getLogger(__name__)
 
 console = Console()
 
-os.system('del /s /q C:\\tmp > NUL 2>&1')
-os.system('xcopy /s /i Brian C:\\tmp > NUL 2>&1')
-
-# Безопасное чтение строк файла с определением кодировки
-def safe_readlines(path):
+# Улучшенная функция для определения типа диска (SSD/HDD)
+def get_disk_type(drive_letter):
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.readlines()
-    except UnicodeDecodeError:
+        # Метод 1: PowerShell Get-PhysicalDisk (самый точный)
+        import subprocess
         try:
-            with open(path, 'r', encoding='utf-16') as f:
-                return f.readlines()
-        except UnicodeDecodeError:
-            with open(path, 'r', encoding='cp1251') as f:
-                return f.readlines()
+            cmd = f'powershell "Get-WmiObject -Class Win32_LogicalDisk | Where-Object {{$_.DeviceID -eq \'{drive_letter}:\'}} | ForEach-Object {{ Get-WmiObject -Class Win32_DiskPartition | Where-Object {{$_.DriveLetter -eq \'{drive_letter}\'}} | ForEach-Object {{ Get-WmiObject -Class Win32_DiskDrive | Where-Object {{$_.Index -eq $_.Index}} | Select-Object MediaType,Model }}}}"'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            logger.info(f"PowerShell результат для диска {drive_letter}: {result.stdout}")
+            if 'SSD' in result.stdout.upper() or 'SOLID' in result.stdout.upper():
+                return 'SSD'
+            elif 'HDD' in result.stdout.upper():
+                return 'HDD'
+        except Exception as e:
+            logger.warning(f"Ошибка PowerShell для диска {drive_letter}: {e}")
+            pass
+        
+        # Метод 2: Альтернативная PowerShell команда
+        try:
+            cmd = f'powershell "Get-PhysicalDisk | Get-Disk | Get-Partition | Where-Object {{$_.DriveLetter -eq \'{drive_letter}\'}} | Get-Disk | Get-PhysicalDisk | Select-Object MediaType"'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            logger.info(f"PowerShell альтернативный результат для диска {drive_letter}: {result.stdout}")
+            if 'SSD' in result.stdout.upper():
+                return 'SSD'
+            elif 'HDD' in result.stdout.upper():
+                return 'HDD'
+        except Exception as e:
+            logger.warning(f"Ошибка PowerShell альтернативный для диска {drive_letter}: {e}")
+            pass
+        
+        # Метод 3: WMI (если доступен)
+        try:
+            import wmi
+            c = wmi.WMI()
+            for disk in c.Win32_LogicalDisk():
+                if disk.DeviceID.startswith(drive_letter.upper()):
+                    for partition in c.Win32_DiskPartition():
+                        if partition.DriveLetter == drive_letter.upper():
+                            for physical_disk in c.Win32_DiskDrive():
+                                if physical_disk.Index == partition.DiskIndex:
+                                    logger.info(f"WMI данные для диска {drive_letter}: Model={getattr(physical_disk, 'Model', 'N/A')}, MediaType={getattr(physical_disk, 'MediaType', 'N/A')}, InterfaceType={getattr(physical_disk, 'InterfaceType', 'N/A')}")
+                                    # Проверяем MediaType
+                                    if hasattr(physical_disk, 'MediaType') and physical_disk.MediaType:
+                                        media_type = physical_disk.MediaType.lower()
+                                        if 'ssd' in media_type or 'solid' in media_type:
+                                            return 'SSD'
+                                    # Проверяем модель
+                                    if hasattr(physical_disk, 'Model') and physical_disk.Model:
+                                        model = physical_disk.Model.lower()
+                                        if 'ssd' in model or 'solid' in model or 'nvme' in model:
+                                            return 'SSD'
+                                    # Проверяем интерфейс
+                                    if hasattr(physical_disk, 'InterfaceType') and physical_disk.InterfaceType:
+                                        interface = physical_disk.InterfaceType.lower()
+                                        if 'nvme' in interface or 'ssd' in interface:
+                                            return 'SSD'
+                                    return 'HDD'
+        except ImportError:
+            logger.warning(f"WMI не установлен для диска {drive_letter}")
+            pass
+        except Exception as e:
+            logger.warning(f"Ошибка WMI при определении типа диска {drive_letter}: {e}")
+        
+        # Метод 4: WMIC (fallback)
+        try:
+            cmd = f'wmic diskdrive get model,mediatype,interfacetype /format:csv'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            logger.info(f"WMIC результат для диска {drive_letter}: {result.stdout}")
+            if 'ssd' in result.stdout.lower() or 'nvme' in result.stdout.lower():
+                return 'SSD'
+            elif 'hdd' in result.stdout.lower() or 'ata' in result.stdout.lower():
+                return 'HDD'
+        except Exception as e:
+            logger.warning(f"Ошибка WMIC для диска {drive_letter}: {e}")
+            pass
+        
+        # Метод 5: Проверка по имени модели (последний fallback)
+        try:
+            cmd = f'wmic diskdrive get model /format:csv'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            logger.info(f"WMIC модель для диска {drive_letter}: {result.stdout}")
+            model_output = result.stdout.lower()
+            if any(keyword in model_output for keyword in ['ssd', 'nvme', 'solid', 'samsung', 'crucial', 'kingston']):
+                return 'SSD'
+        except Exception as e:
+            logger.warning(f"Ошибка WMIC модель для диска {drive_letter}: {e}")
+            pass
+        
+        logger.warning(f"Не удалось определить тип диска {drive_letter}, возвращаю UNKNOWN")
+        return 'UNKNOWN'
+    except Exception as e:
+        logger.warning(f"Ошибка при определении типа диска {drive_letter}: {e}")
+        return 'UNKNOWN'
+
+# Функция для выбора оптимального диска для операций
+def get_optimal_drive():
+    c_type = get_disk_type('C')
+    # Проверяем, существует ли диск D
+    d_exists = os.path.exists('D:\\')
+    logger.info(f"Диск D существует: {d_exists}")
+    
+    if d_exists:
+        d_type = get_disk_type('D')
+        logger.info(f"Тип диска D: {d_type}")
+    else:
+        d_type = 'UNKNOWN'
+        logger.info("Диск D не существует")
+    
+    logger.info(f"Тип диска C: {c_type}")
+    
+    if c_type == 'SSD' and d_type == 'HDD':
+        console.print("[yellow]Диск C является SSD, диск D является HDD. Операции будут проводиться на диске D для снижения износа SSD.[/yellow]")
+        logger.info("Выбран диск D (HDD) для операций вместо диска C (SSD)")
+        return 'D'
+    elif c_type == 'SSD':
+        console.print("[yellow]Внимание! Диск C является SSD. Файлы будут несколько раз перезаписываться, что может ускорить износ SSD.[/yellow]")
+        logger.warning("Операции будут проводиться на SSD (диск C), что может ускорить износ")
+        return 'C'
+    else:
+        console.print("[green]Диск C является HDD. Операции будут проводиться на диске C.[/green]")
+        logger.info("Выбран диск C (HDD) для операций")
+        return 'C'
 
 # Функция для создания полного бэкапа реестра
 def backup_registry(backup_path=None):
-    backup_dir = r'C:\Backup'
+    backup_dir = f'{optimal_drive}:\\Backup'
     os.makedirs(backup_dir, exist_ok=True)
     if backup_path is None:
         dt = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -60,8 +167,47 @@ def backup_registry(backup_path=None):
         logger.error(f"Ошибка при создании бэкапа реестра: {backup_path}")
         sys.exit(1)
 
-backup_registry()
-os.system('exit')
+# Копируем случайный бэкап реестра в C:\temp\backup_0
+# Определяем оптимальный диск для операций
+optimal_drive = get_optimal_drive()
+backup_files = glob.glob(f'{optimal_drive}:\\Backup\\*.reg')
+if backup_files:
+    random_backup = random.choice(backup_files)
+    temp_dir = f'{optimal_drive}:\\temp'
+    os.makedirs(temp_dir, exist_ok=True)
+    shutil.copy2(random_backup, f'{temp_dir}\\backup_0.reg')
+    logger.info(f"Скопирован случайный бэкап реестра: {random_backup} -> {temp_dir}\\backup_0.reg")
+else:
+    logger.warning("Не найдено бэкапов реестра для копирования. Создаю новый бэкап...")
+    console.print("[yellow]Бэкапы реестра не найдены. Создаю новый бэкап...[/yellow]")
+    # Создаём новый бэкап
+    backup_registry()
+    # Проверяем, создался ли бэкап
+    backup_files = glob.glob(f'{optimal_drive}:\\Backup\\*.reg')
+    if backup_files:
+        random_backup = random.choice(backup_files)
+        temp_dir = f'{optimal_drive}:\\temp'
+        os.makedirs(temp_dir, exist_ok=True)
+        shutil.copy2(random_backup, f'{temp_dir}\\backup_0.reg')
+        logger.info(f"Скопирован новый бэкап реестра: {random_backup} -> {temp_dir}\\backup_0.reg")
+        console.print(f"[green]Новый бэкап создан и скопирован: {random_backup}[/green]")
+    else:
+        logger.error("Не удалось создать бэкап реестра!")
+        console.print("[red]Ошибка: не удалось создать бэкап реестра![/red]")
+        sys.exit(1)
+
+# Безопасное чтение строк файла с определением кодировки
+def safe_readlines(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.readlines()
+    except UnicodeDecodeError:
+        try:
+            with open(path, 'r', encoding='utf-16') as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            with open(path, 'r', encoding='cp1251') as f:
+                return f.readlines()
 
 # Функция для отображения прогресс-бара rich
 class RichProgressBar:
@@ -132,8 +278,8 @@ def copy_benchmark(src, dst):
     logger.info(f"Бенчмарк: копирование {src} -> {dst}")
     start = time.perf_counter()
     if os.path.exists(dst):
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
+        os.remove(dst)
+    shutil.copy2(src, dst)
     end = time.perf_counter()
     logger.info(f"Время копирования {src} -> {dst}: {end - start:.2f} сек")
     return end - start
@@ -172,11 +318,11 @@ def open_notepad_benchmark():
     import glob
     import time
     import psutil
-    backup_files = glob.glob(r'C:\Backup\*.reg')
+    backup_files = glob.glob(f'{optimal_drive}:\\Backup\\*.reg')
     logger.info(f"Бенчмарк: открытие случайного .reg файла в notepad. Найдено файлов: {len(backup_files)}")
     # print("[DEBUG] Найдено .reg файлов:", backup_files)
     if not backup_files:
-        print("[ERROR] Не найдено ни одного .reg файла в C:\\Backup\\. Проверьте путь и наличие файлов.")
+        print(f"[ERROR] Не найдено ни одного .reg файла в {optimal_drive}:\\Backup\\. Проверьте путь и наличие файлов.")
         logger.warning("Не найдено ни одного .reg файла в C:\\Backup для notepad-бенчмарка")
         return "NO_FILES"
     reg_file = random.choice(backup_files)
@@ -287,8 +433,8 @@ def main():
     else:
         logger.info("Бэкап реестра отключён по флагу --without_backup")
     # Выводим список бэкапов как таблицу
-    backup_files = glob.glob(r'C:\Backup\*.reg')
-    table = Table(title="Доступные бэкапы реестра (C:\\Backup)")
+    backup_files = glob.glob(f'{optimal_drive}:\\Backup\\*.reg')
+    table = Table(title=f"Доступные бэкапы реестра ({optimal_drive}:\\Backup)")
     table.add_column("#", style="cyan", justify="right")
     table.add_column("Файл", style="magenta")
     table.add_column("Размер (КБ)", style="green", justify="right")
@@ -304,16 +450,16 @@ def main():
     if backup_files:
         console.print(table)
     else:
-        console.print('[yellow]В папке C:\\Backup нет .reg бэкапов[/yellow]')
+        console.print(f'[yellow]В папке {optimal_drive}:\\Backup нет .reg бэкапов[/yellow]')
     # 2. Эталонный бенчмарк
-    console.print("[yellow]Эталонный бенчмарк: копирование temp -> Brian[/yellow]")
-    t_copy0 = copy_benchmark(r'C:\tmp', r'C:\temp0')
-    console.print(f"[green]Время копирования temp -> Brian:[/green] {t_copy0:.2f} сек")
+    console.print("[yellow]Эталонный бенчмарк: копирование backup_0 -> backup_1[/yellow]")
+    t_copy0 = copy_benchmark(f'{optimal_drive}:\\temp\\backup_0.reg', f'{optimal_drive}:\\temp\\backup_1.reg')
+    console.print(f"[green]Время копирования backup_0 -> backup_1:[/green] {t_copy0:.2f} сек")
     t_browser0 = open_browser_benchmark('https://shre.su/L7VO')
     console.print(f"[green]Время открытия браузера:[/green] {t_browser0:.2f} сек")
     t_notepad0 = open_notepad_benchmark()
     if t_notepad0 == "NO_FILES":
-        console.print(f"[yellow]Нет .reg файлов в C:\\Backup для notepad-бенчмарка[/yellow]")
+        console.print(f"[yellow]Нет .reg файлов в {optimal_drive}:\\Backup для notepad-бенчмарка[/yellow]")
         logger.warning("Нет .reg файлов в C:\\Backup для notepad-бенчмарка")
     elif t_notepad0 == "FAILED_TO_LOAD":
         console.print(f"[red]Ошибка: не удалось открыть или прочитать .reg файл в Notepad для бенчмарка[/red]")
@@ -329,7 +475,7 @@ def main():
         tweak_files = get_tweak_files_with_descriptions('Brian')
         file_list_str = '\n'.join([f"{f['name']}: {f['desc']}" for f in tweak_files])
         select_prompt = (
-            "Вот список .reg, .bat и .cmd файлов с описаниями. Выбери только те, которые лучше всего подходят для полной и агрессивной оптимизации Windows 11 (максимальная производительность, отключение всей телеметрии, удаление UWP-приложений, отключение всех служб, антивируса, firewall, обновлений, оптимизация nvidia, directx, windows 11 и т.д.). "
+            "Дельай очень быстро!!! Вот список .reg, .bat и .cmd файлов с описаниями. Выбери только те, которые лучше всего подходят для полной и агрессивной оптимизации Windows 11 (максимальная производительность, отключение всей телеметрии, удаление UWP-приложений, отключение всех служб, антивируса, firewall, обновлений, оптимизация nvidia, directx, windows 11 и т.д.). "
             "Ответь только списком имён файлов, по одному на строку, без лишнего текста.\n\n" + file_list_str
         )
         import threading
@@ -362,7 +508,7 @@ def main():
         logger.info(f"Выбраны файлы: {', '.join([f['name'] for f in selected_files])}")
         merged_tweaks_content = merge_tweak_files(selected_files)
         user_prompt = (
-            "Вот примеры твиков для Windows 11 (.reg, .bat, .cmd), используй их как основу, а также придумай свои твики. Не в коем случае не пиши команду pause. "
+            "Дельай очень быстро!!! Делай очень много твиков, чтобы Windows 11 был максимально оптимизирован. Вот примеры твиков для Windows 11 (.reg, .bat, .cmd), используй их как основу, а также придумай свои твики. Не в коем случае не пиши команду pause. "
             "Сгенерируй .reg файл и .bat/.cmd скрипт для максимально агрессивной оптимизации Windows 11. "
             "ОБЯЗАТЕЛЬНО: отключи всю телеметрию, удали все UWP-приложения, отключи все возможные службы, антивирус, firewall, обновления, оптимизируй nvidia, directx, windows 11 и т.д. "
             "Внеси в реестр целую кучу глобальных твиков. .bat файл должен получиться очень огромным. "
@@ -370,7 +516,7 @@ def main():
             f"Примеры твиков:\n{merged_tweaks_content}"
         )
         undo_prompt = (
-            "Сгенерируй .reg файл и .bat/.cmd скрипт для ОТМЕНЫ изменений, внесённых предыдущим оптимизационным твиком. Не в коем случае не пиши команду pause. "
+            "Дельай очень быстро!!! Сгенерируй .reg файл и .bat/.cmd скрипт для ОТМЕНЫ изменений, внесённых предыдущим оптимизационным твиком. Не в коем случае не пиши команду pause. "
             "Добавь комментарии к каждому твик-ключу и каждой команде."
         )
         progress = RichProgressBar(f"ChatGPT генерирует твики для итерации {i}...")
@@ -458,23 +604,23 @@ def main():
             f.write(bat_undo or ":: Нет сгенерированного bat/cmd кода")
         apply_tweaks(reg_filename, bat_filename)
         # Бенчмарк после твиков
-        if os.path.exists(r'C:\temp1'):
-            shutil.rmtree(r'C:\temp1')
-        t_copy1 = copy_benchmark(r'C:\temp0', r'C:\temp1')
+        if os.path.exists(f'{optimal_drive}:\\temp\\backup_1.reg'):
+            os.remove(f'{optimal_drive}:\\temp\\backup_1.reg')
+        t_copy1 = copy_benchmark(f'{optimal_drive}:\\temp\\backup_0.reg', f'{optimal_drive}:\\temp\\backup_1.reg')
         t_browser1 = open_browser_benchmark('https://shre.su/L7VO')
-        console.print(f"[green]Время копирования Brian -> C:\\temp1:[/green] {t_copy1:.2f} сек")
+        console.print(f"[green]Время копирования backup_0 -> backup_1:[/green] {t_copy1:.2f} сек")
         console.print(f"[green]Время открытия браузера:[/green] {t_browser1:.2f} сек")
         t_notepad1 = open_notepad_benchmark()
         if isinstance(t_notepad1, float):
             console.print(f"[green]Время открытия бэкапа реестра в notepad после твика:[/green] {t_notepad1:.2f} сек")
             logger.info(f"Время открытия бэкапа реестра в notepad после твика: {t_notepad1:.2f} сек")
         elif t_notepad1 == "NO_FILES":
-            console.print(f"[yellow]Нет .reg файлов в C:\\Backup для notepad-бенчмарка после твика[/yellow]")
+            console.print(f"[yellow]Нет .reg файлов в {optimal_drive}:\\Backup для notepad-бенчмарка после твика[/yellow]")
             logger.warning("Нет .reg файлов в C:\\Backup для notepad-бенчмарка после твика")
         elif t_notepad1 == "FAILED_TO_LOAD":
             console.print(f"[red]Ошибка: не удалось открыть или прочитать .reg файл в Notepad для бенчмарка после твика[/red]")
             logger.error("Ошибка: не удалось открыть или прочитать .reg файл в Notepad для бенчмарка после твика")
-        logger.info(f"Время копирования Brian -> C:\\temp1: {t_copy1:.2f} сек; Время открытия браузера: {t_browser1:.2f} сек")
+        logger.info(f"Время копирования backup_0 -> backup_1: {t_copy1:.2f} сек; Время открытия браузера: {t_browser1:.2f} сек")
         # Если результат ухудшился — откатить и не учитывать твик
         notepad_worse = False
         if isinstance(t_notepad0, (int, float)) and isinstance(t_notepad1, (int, float)):
@@ -544,6 +690,21 @@ def main():
         logger.warning("Не удалось собрать ни одного успешного твика!")
     console.print("[bold green]Готово! Сравните результаты до и после оптимизации.[/bold green]")
     logger.info("Готово! Сравните результаты до и после оптимизации.")
+    # Выводим финальную информацию о системе и железе
+    console.print("\n[bold cyan]=== ИНФОРМАЦИЯ О СИСТЕМЕ И ЖЕЛЕЗЕ ===[/bold cyan]")
+    console.print("[bold yellow]Операционная система:[/bold yellow]")
+    console.print(f"  {sysinfo['OS']}")
+    console.print("[bold yellow]Процессор:[/bold yellow]")
+    console.print(f"  {sysinfo['CPU']}")
+    console.print(f"  Ядер: {sysinfo['Cores']}")
+    console.print("[bold yellow]Оперативная память:[/bold yellow]")
+    console.print(f"  {sysinfo['RAM']}")
+    console.print("[bold yellow]Видеокарта:[/bold yellow]")
+    console.print(f"  {sysinfo['GPU']}")
+    console.print("\n[bold green]✓ Сгенерированные твики оптимизированы именно для вашего железа и операционной системы![/bold green]")
+    console.print("[bold green]✓ Файлы strongest_tweak.reg и strongest_tweak.bat содержат лучшие настройки для вашей конфигурации.[/bold green]")
+    logger.info(f"Финальная информация о системе: {sysinfo}")
+    logger.info("Сгенерированные твики оптимизированы для конкретного железа и ОС")
 
 if __name__ == "__main__":
     main()
