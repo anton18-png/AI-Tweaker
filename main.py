@@ -15,6 +15,7 @@ import random
 import glob
 import subprocess
 import logging
+import configparser
 
 logging.basicConfig(
     filename='optimizer.log',
@@ -293,7 +294,7 @@ def open_browser_benchmark(url):
     subprocess.Popen(f'start {url}', shell=True)
     # Ждём появления процесса браузера
     browser_proc = None
-    browser_names = ['chrome', 'firefox', 'msedge', 'opera', 'brave', 'yandex', 'iexplore']
+    browser_names = ['chrome', 'firefox', 'msedge', 'opera', 'brave', 'yandex', 'browser', 'iexplore']
     browser_started = False
     while not browser_started:
         for proc in psutil.process_iter(['name', 'cmdline']):
@@ -389,9 +390,9 @@ def open_notepad_benchmark():
 def apply_tweaks(reg_path, bat_path):
     logger.info(f"Применение твиков: {reg_path}, {bat_path}")
     # Импортируем .reg
-    os.system(f'launcher.exe regedit /s "{reg_path}"')
+    os.system(f'launcher.exe regedit /s "{reg_path}" >> tweaker.log')
     # Запускаем .bat/.cmd
-    os.system(f'launcher.exe cmd /c "{bat_path}"')
+    os.system(f'launcher.exe cmd /c "{bat_path}" >> tweaker.log')
 
 def get_system_info():
     info = {
@@ -413,10 +414,116 @@ def get_system_info():
         pass
     return info
 
+# Функция для чтения настроек из settings.ini
+def load_settings():
+    config = configparser.ConfigParser()
+    if os.path.exists('settings.ini'):
+        config.read('settings.ini', encoding='utf-8')
+        logger.info("Настройки загружены из settings.ini")
+    else:
+        logger.warning("Файл settings.ini не найден, используются настройки по умолчанию")
+    return config
+
+# Функция для выполнения бенчмарка программы
+def program_benchmark(program_name, program_path, args=""):
+    logger.info(f"Бенчмарк программы: {program_name} ({program_path})")
+    start = time.perf_counter()
+    try:
+        if args:
+            process = subprocess.Popen([program_path] + args.split(), 
+                                     stdout=subprocess.DEVNULL, 
+                                     stderr=subprocess.DEVNULL)
+        else:
+            process = subprocess.Popen([program_path], 
+                                     stdout=subprocess.DEVNULL, 
+                                     stderr=subprocess.DEVNULL)
+        
+        # Ждём появления процесса
+        for _ in range(50):  # 5 секунд максимум
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'] and program_name.lower() in proc.info['name'].lower():
+                    process.terminate()
+                    end = time.perf_counter()
+                    logger.info(f"Время запуска программы {program_name}: {end - start:.2f} сек")
+                    return end - start
+            time.sleep(0.1)
+        
+        process.terminate()
+        end = time.perf_counter()
+        logger.info(f"Время запуска программы {program_name}: {end - start:.2f} сек")
+        return end - start
+    except Exception as e:
+        logger.error(f"Ошибка при запуске программы {program_name}: {e}")
+        return None
+
+# Функция для выполнения бенчмарка команды
+def command_benchmark(command_name, command, args=""):
+    logger.info(f"Бенчмарк команды: {command_name} ({command})")
+    start = time.perf_counter()
+    try:
+        if args:
+            result = subprocess.run([command] + args.split(), 
+                                  shell=True, 
+                                  capture_output=True, 
+                                  timeout=10)
+        else:
+            result = subprocess.run([command], 
+                                  shell=True, 
+                                  capture_output=True, 
+                                  timeout=10)
+        
+        end = time.perf_counter()
+        logger.info(f"Время выполнения команды {command_name}: {end - start:.2f} сек")
+        return end - start
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Команда {command_name} превысила время ожидания")
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении команды {command_name}: {e}")
+        return None
+
+# Функция для выполнения всех дополнительных бенчмарков
+def run_additional_benchmarks(settings):
+    results = {}
+    
+    # Бенчмарк программ
+    if settings.getboolean('Benchmark', 'enable_program_benchmark', fallback=True):
+        programs = settings.get('Benchmark', 'test_programs', fallback='').strip().split('\n')
+        for program_line in programs:
+            if program_line.strip() and not program_line.strip().startswith('#'):
+                try:
+                    name, path, args = program_line.strip().split('|', 2)
+                    result = program_benchmark(name.strip(), path.strip(), args.strip())
+                    if result is not None:
+                        results[f'program_{name.strip()}'] = result
+                        console.print(f"[green]Время запуска {name.strip()}:[/green] {result:.2f} сек")
+                except Exception as e:
+                    logger.warning(f"Ошибка при парсинге программы: {program_line} - {e}")
+    
+    # Бенчмарк команд
+    if settings.getboolean('Benchmark', 'enable_command_benchmark', fallback=True):
+        commands = settings.get('Benchmark', 'test_commands', fallback='').strip().split('\n')
+        for command_line in commands:
+            if command_line.strip() and not command_line.strip().startswith('#'):
+                try:
+                    name, command, args = command_line.strip().split('|', 2)
+                    result = command_benchmark(name.strip(), command.strip(), args.strip())
+                    if result is not None:
+                        results[f'command_{name.strip()}'] = result
+                        console.print(f"[green]Время выполнения {name.strip()}:[/green] {result:.2f} сек")
+                except Exception as e:
+                    logger.warning(f"Ошибка при парсинге команды: {command_line} - {e}")
+    
+    return results
+
 def main():
     logger.info("=== Запуск GPT Windows 11 Optimizer ===")
+    
+    # Загружаем настройки
+    settings = load_settings()
+    
     parser = argparse.ArgumentParser(description="GPT Windows 11 Optimizer: Benchmark & Tweaks")
-    parser.add_argument('-i', '--iterations', type=int, default=5, help='Количество итераций (по умолчанию 5)')
+    parser.add_argument('-i', '--iterations', type=int, default=1, help='Количество итераций (по умолчанию 1)')
     parser.add_argument('-w', '--without_backup', action='store_true', help='Не создавать бэкап реестра перед оптимизацией')
     args = parser.parse_args()
     iterations = args.iterations
@@ -427,6 +534,11 @@ def main():
     console.print("[bold yellow]Информация о системе:[/bold yellow]")
     for k, v in sysinfo.items():
         console.print(f"[bold]{k}:[/bold] {v}")
+    
+    # Выполняем дополнительные бенчмарки из settings.ini
+    console.print("\n[bold yellow]Дополнительные бенчмарки:[/bold yellow]")
+    additional_results = run_additional_benchmarks(settings)
+    
     # 1. Бэкап реестра (если не отключён)
     if not without_backup:
         backup_registry()
@@ -455,7 +567,33 @@ def main():
     console.print("[yellow]Эталонный бенчмарк: копирование backup_0 -> backup_1[/yellow]")
     t_copy0 = copy_benchmark(f'{optimal_drive}:\\temp\\backup_0.reg', f'{optimal_drive}:\\temp\\backup_1.reg')
     console.print(f"[green]Время копирования backup_0 -> backup_1:[/green] {t_copy0:.2f} сек")
-    t_browser0 = open_browser_benchmark('https://shre.su/L7VO')
+    urls = [
+        "https://shre.su/WXFN",
+        "https://shre.su/CFST",
+        "https://shre.su/4A56",
+        "https://shre.su/CL39",
+        "https://shre.su/3SIN",
+        "https://shre.su/UEO7",
+        "https://shre.su/HHN2",
+        "https://shre.su/WX89",
+        "https://shre.su/WX89",
+        "https://shre.su/0KO3",
+        "https://shre.su/L7VO",
+        "https://shre.su/NSBL",
+        "https://shre.su/UU41",
+        "https://shre.su/H9FB",
+        "https://shre.su/4ON2",
+        "https://shre.su/KC77",
+        "https://shre.su/84W8",
+        "https://shre.su/DHBU",
+        "https://shre.su/JXFN",
+        "https://shre.su/WH7K",
+        "https://shre.su/2JXF",
+        "https://shre.su/SRCL",
+        "https://shre.su/MICD",
+        "https://shre.su/VH89"
+    ]
+    t_browser0 = open_browser_benchmark(random.choice(urls))
     console.print(f"[green]Время открытия браузера:[/green] {t_browser0:.2f} сек")
     t_notepad0 = open_notepad_benchmark()
     if t_notepad0 == "NO_FILES":
@@ -504,16 +642,17 @@ def main():
             console.print("[red]ChatGPT не выбрал ни одного файла![/red]")
             logger.error("ChatGPT не выбрал ни одного файла!")
             sys.exit(1)
-        console.print("[green]Выбраны файлы:[/green] " + ', '.join([f['name'] for f in selected_files]))
+        # console.print("[green]Выбраны файлы:[/green] " + ', '.join([f['name'] for f in selected_files]))
         logger.info(f"Выбраны файлы: {', '.join([f['name'] for f in selected_files])}")
         merged_tweaks_content = merge_tweak_files(selected_files)
+        # print(merged_tweaks_content)
         user_prompt = (
             "Дельай очень быстро!!! Делай очень много твиков, чтобы Windows 11 был максимально оптимизирован. Вот примеры твиков для Windows 11 (.reg, .bat, .cmd), используй их как основу, а также придумай свои твики. Не в коем случае не пиши команду pause. "
             "Сгенерируй .reg файл и .bat/.cmd скрипт для максимально агрессивной оптимизации Windows 11. "
             "ОБЯЗАТЕЛЬНО: отключи всю телеметрию, удали все UWP-приложения, отключи все возможные службы, антивирус, firewall, обновления, оптимизируй nvidia, directx, windows 11 и т.д. "
             "Внеси в реестр целую кучу глобальных твиков. .bat файл должен получиться очень огромным. "
             "Добавь комментарии к каждому твик-ключу и каждой команде.\n\n"
-            f"Примеры твиков:\n{merged_tweaks_content}"
+            f"Примеры твиков, дрбавь их в свои твики:\n{merged_tweaks_content}"
         )
         undo_prompt = (
             "Дельай очень быстро!!! Сгенерируй .reg файл и .bat/.cmd скрипт для ОТМЕНЫ изменений, внесённых предыдущим оптимизационным твиком. Не в коем случае не пиши команду pause. "
@@ -607,7 +746,33 @@ def main():
         if os.path.exists(f'{optimal_drive}:\\temp\\backup_1.reg'):
             os.remove(f'{optimal_drive}:\\temp\\backup_1.reg')
         t_copy1 = copy_benchmark(f'{optimal_drive}:\\temp\\backup_0.reg', f'{optimal_drive}:\\temp\\backup_1.reg')
-        t_browser1 = open_browser_benchmark('https://shre.su/L7VO')
+        urls = [
+            "https://shre.su/WXFN",
+            "https://shre.su/CFST",
+            "https://shre.su/4A56",
+            "https://shre.su/CL39",
+            "https://shre.su/3SIN",
+            "https://shre.su/UEO7",
+            "https://shre.su/HHN2",
+            "https://shre.su/WX89",
+            "https://shre.su/WX89",
+            "https://shre.su/0KO3",
+            "https://shre.su/L7VO",
+            "https://shre.su/NSBL",
+            "https://shre.su/UU41",
+            "https://shre.su/H9FB",
+            "https://shre.su/4ON2",
+            "https://shre.su/KC77",
+            "https://shre.su/84W8",
+            "https://shre.su/DHBU",
+            "https://shre.su/JXFN",
+            "https://shre.su/WH7K",
+            "https://shre.su/2JXF",
+            "https://shre.su/SRCL",
+            "https://shre.su/MICD",
+            "https://shre.su/VH89"
+        ]
+        t_browser1 = open_browser_benchmark(random.choice(urls))
         console.print(f"[green]Время копирования backup_0 -> backup_1:[/green] {t_copy1:.2f} сек")
         console.print(f"[green]Время открытия браузера:[/green] {t_browser1:.2f} сек")
         t_notepad1 = open_notepad_benchmark()
@@ -672,9 +837,20 @@ def main():
         )
     logger.info("Оптимизация завершена. Сравните результаты до и после.")
     console.print(table)
+    
+    # Выводим результаты дополнительных бенчмарков
+    if additional_results:
+        console.print("\n[bold yellow]Результаты дополнительных бенчмарков:[/bold yellow]")
+        additional_table = Table(title="Дополнительные бенчмарки")
+        additional_table.add_column("Тест", style="cyan")
+        additional_table.add_column("Время (сек)", style="green")
+        for test_name, time_result in additional_results.items():
+            additional_table.add_row(test_name, f"{time_result:.2f}")
+        console.print(additional_table)
+    
     console.print("[bold yellow]Информация о системе:[/bold yellow]")
-    for k, v in sysinfo.items():
-        console.print(f"[bold]{k}:[/bold] {v}")
+    # for k, v in sysinfo.items():
+    #     console.print(f"[bold]{k}:[/bold] {v}")
     # Собираем strongest tweak
     if applied_tweaks:
         strongest_reg = '\n'.join([t['reg'] for t in applied_tweaks if t['reg']])
