@@ -51,8 +51,8 @@
    ```
    pip install pygetwindow pywinauto
    ```
-
-3. **(Опционально) Соберите exe:**
+3. **Распаковка архива** `Brian.7z`
+4. **(Опционально) Соберите exe:**
    ```
    dist.bat
    ```
