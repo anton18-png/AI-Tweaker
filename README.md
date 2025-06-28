@@ -82,6 +82,11 @@
 - Установленные утилиты: `elevator.exe`, `launcher.exe`, `PowerRun.exe` (идут в комплекте)
 - Папка `Brian` с твиками
 
+## Рекомендуется
+
+- Windows 10 22H2
+- Python 3.13.3
+
 ## Примечания
 
 - Для работы с GPT-4 используется библиотека [g4f](https://github.com/xtekky/gpt4free).
